@@ -1,0 +1,26 @@
+[package]
+name = "cardano-lightning-client"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Cardano Lightning bridge client library and CLI"
+
+[lib]
+name = "cardano_lightning_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cardano-lightning-cli"
+path = "src/bin/cli.rs"
+
+[[bin]]
+name = "test-whisky"
+path = "src/bin/test_whisky.rs"
+
+[dependencies]
+ciborium = "0.2"
+hex = "0.4"
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+whisky = { version = "1.0", default-features = false, features = ["csl"] }
