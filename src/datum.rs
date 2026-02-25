@@ -105,18 +105,21 @@ fn cbor_to_plutus_json(val: &CborValue) -> Result<Value, CardanoError> {
 
 // ─── Rust → Plutus JSON serialization (for building transactions) ───
 
-use crate::types::{Action, Invoice, State};
+use crate::types::{Action, Invoice, Offramp, State};
 
 /// Serialize a State to Plutus JSON (for inline datum on tx output).
 pub fn state_to_plutus_json(state: &State) -> Value {
     let invoices: Vec<Value> = state.invoices.iter().map(invoice_to_plutus_json).collect();
+    let offramps: Vec<Value> = state.offramps.iter().map(offramp_to_plutus_json).collect();
     serde_json::json!({
         "constructor": 0,
         "fields": [
             {"int": state.total_liquidity},
             {"int": state.reserved},
             {"int": state.last_invoice_id},
-            {"list": invoices}
+            {"list": invoices},
+            {"int": state.last_offramp_id},
+            {"list": offramps}
         ]
     })
 }
@@ -131,6 +134,20 @@ pub fn invoice_to_plutus_json(invoice: &Invoice) -> Value {
             {"bytes": invoice.owner},
             {"int": invoice.timestamp},
             {"int": invoice.expires_at}
+        ]
+    })
+}
+
+/// Serialize an Offramp to Plutus JSON.
+pub fn offramp_to_plutus_json(offramp: &Offramp) -> Value {
+    serde_json::json!({
+        "constructor": 0,
+        "fields": [
+            {"int": offramp.offramp_id},
+            {"int": offramp.amount},
+            {"bytes": offramp.payment_hash},
+            {"bytes": offramp.refund_address},
+            {"int": offramp.expires_at}
         ]
     })
 }
@@ -162,6 +179,23 @@ pub fn action_to_plutus_json(action: &Action) -> Value {
         Action::CancelInvoice { invoice_id } => serde_json::json!({
             "constructor": 4,
             "fields": [{"int": *invoice_id}]
+        }),
+        Action::CreateOfframp { amount, payment_hash, refund_address, expires_at } => serde_json::json!({
+            "constructor": 5,
+            "fields": [
+                {"int": *amount},
+                {"bytes": payment_hash},
+                {"bytes": refund_address},
+                {"int": *expires_at}
+            ]
+        }),
+        Action::FulfillOfframp { offramp } => serde_json::json!({
+            "constructor": 6,
+            "fields": [offramp_to_plutus_json(offramp)]
+        }),
+        Action::CancelOfframp { offramp_id } => serde_json::json!({
+            "constructor": 7,
+            "fields": [{"int": *offramp_id}]
         }),
     }
 }
@@ -242,6 +276,8 @@ mod tests {
                 timestamp: 1700000000000,
                 expires_at: 1700003600000,
             }],
+            last_offramp_id: 0,
+            offramps: vec![],
         };
         let json = state_to_plutus_json(&state);
         let parsed = State::try_from(&json).unwrap();
@@ -250,6 +286,8 @@ mod tests {
         assert_eq!(parsed.last_invoice_id, state.last_invoice_id);
         assert_eq!(parsed.invoices.len(), 1);
         assert_eq!(parsed.invoices[0].owner, state.invoices[0].owner);
+        assert_eq!(parsed.last_offramp_id, 0);
+        assert!(parsed.offramps.is_empty());
     }
 
     #[test]
@@ -267,6 +305,8 @@ mod tests {
             reserved: 0,
             last_invoice_id: 0,
             invoices: vec![],
+            last_offramp_id: 0,
+            offramps: vec![],
         };
         let json = state_to_plutus_json(&state);
         let cbor_hex = plutus_json_to_cbor_hex(&json).unwrap();
@@ -275,5 +315,7 @@ mod tests {
         assert_eq!(parsed.total_liquidity, 1_000_000);
         assert_eq!(parsed.reserved, 0);
         assert!(parsed.invoices.is_empty());
+        assert_eq!(parsed.last_offramp_id, 0);
+        assert!(parsed.offramps.is_empty());
     }
 }

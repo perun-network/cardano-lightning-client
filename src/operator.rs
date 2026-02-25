@@ -6,7 +6,7 @@
 use crate::agent::CardanoAgent;
 use crate::contract::{self, TxContext};
 use crate::error::CardanoError;
-use crate::types::{Invoice, State};
+use crate::types::{Invoice, Offramp, State};
 use whisky::{Asset, Network, UTxO, UtxoInput, UtxoOutput};
 
 /// Configuration for the operator agent.
@@ -192,6 +192,62 @@ impl OperatorAgent {
         Ok(utxos)
     }
 
+    /// Verify that a TX sent cBTC to the operator address.
+    ///
+    /// Queries Blockfrost `GET /txs/{tx_hash}/utxos` and checks that at least one
+    /// output to `operator_address` carries >= `expected_amount` cBTC.
+    pub async fn verify_cbtc_received(
+        &self, tx_hash: &str, expected_amount: i64,
+    ) -> Result<bool, CardanoError> {
+        let base = self.agent.config().blockfrost_url.trim_end_matches('/');
+        let url = format!("{}/txs/{}/utxos", base, tx_hash);
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(&url)
+            .header("project_id", &self.agent.config().blockfrost_key)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CardanoError::NotFound(format!(
+                "Blockfrost txs/{}/utxos error {}: {}",
+                tx_hash, status, body,
+            )));
+        }
+
+        let data: serde_json::Value = resp.json().await?;
+        let cbtc_unit = format!("{}{}", self.config.cbtc_policy, self.config.cbtc_name);
+
+        // Check outputs for cBTC sent to operator address
+        if let Some(outputs) = data.get("outputs").and_then(|v| v.as_array()) {
+            for output in outputs {
+                let addr = output.get("address").and_then(|v| v.as_str()).unwrap_or("");
+                if addr != self.config.operator_address {
+                    continue;
+                }
+                if let Some(amounts) = output.get("amount").and_then(|v| v.as_array()) {
+                    for a in amounts {
+                        let unit = a.get("unit").and_then(|v| v.as_str()).unwrap_or("");
+                        let qty: i64 = a
+                            .get("quantity")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("0")
+                            .parse()
+                            .unwrap_or(0);
+                        if unit == cbtc_unit && qty >= expected_amount {
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Build + sign a Deposit transaction. Returns signed tx hex.
     pub async fn deposit(&self, amount: i64) -> Result<String, CardanoError> {
         let script_utxo = self.query_script_utxo().await?;
@@ -249,6 +305,42 @@ impl OperatorAgent {
 
         let ctx = self.make_tx_context(&script_utxo, &wallet_utxos);
         contract::build_cancel_invoice_tx(&ctx, &script_utxo.state, invoice_id)
+    }
+
+    /// Build + sign a CreateOfframp transaction. Returns (offramp_id, signed_tx_hex).
+    pub async fn create_offramp(
+        &self, amount: i64, payment_hash: &str, refund_address: &str, expires_at: i64,
+    ) -> Result<(i64, String), CardanoError> {
+        let script_utxo = self.query_script_utxo().await?;
+        let wallet_utxos = self.query_wallet_utxos().await?;
+
+        let ctx = self.make_tx_context(&script_utxo, &wallet_utxos);
+        contract::build_create_offramp_tx(
+            &ctx,
+            &script_utxo.state,
+            amount,
+            payment_hash,
+            refund_address,
+            expires_at,
+        )
+    }
+
+    /// Build + sign a FulfillOfframp transaction. Returns signed tx hex.
+    pub async fn fulfill_offramp(&self, offramp: &Offramp) -> Result<String, CardanoError> {
+        let script_utxo = self.query_script_utxo().await?;
+        let wallet_utxos = self.query_wallet_utxos().await?;
+
+        let ctx = self.make_tx_context(&script_utxo, &wallet_utxos);
+        contract::build_fulfill_offramp_tx(&ctx, &script_utxo.state, offramp)
+    }
+
+    /// Build + sign a CancelOfframp transaction. Returns signed tx hex.
+    pub async fn cancel_offramp(&self, offramp_id: i64) -> Result<String, CardanoError> {
+        let script_utxo = self.query_script_utxo().await?;
+        let wallet_utxos = self.query_wallet_utxos().await?;
+
+        let ctx = self.make_tx_context(&script_utxo, &wallet_utxos);
+        contract::build_cancel_offramp_tx(&ctx, &script_utxo.state, offramp_id)
     }
 
     /// Submit a signed transaction via Blockfrost.

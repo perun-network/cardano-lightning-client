@@ -8,4 +8,4 @@ pub mod types;
 pub use agent::{CardanoAgent, CardanoConfig};
 pub use error::CardanoError;
 pub use operator::{OperatorAgent, OperatorConfig};
-pub use types::{Action, Invoice, State};
+pub use types::{Action, Invoice, Offramp, State};

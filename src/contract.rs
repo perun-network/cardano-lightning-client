@@ -11,7 +11,7 @@ use whisky::*;
 
 use crate::datum::{action_to_plutus_json, plutus_json_to_cbor_hex, state_to_plutus_json};
 use crate::error::CardanoError;
-use crate::types::{Action, Invoice, State};
+use crate::types::{Action, Invoice, Offramp, State};
 
 /// All context needed to build a contract transaction.
 pub struct TxContext<'a> {
@@ -76,6 +76,8 @@ pub fn build_deposit_tx(
         reserved: current_state.reserved,
         last_invoice_id: current_state.last_invoice_id,
         invoices: current_state.invoices.clone(),
+        last_offramp_id: current_state.last_offramp_id,
+        offramps: current_state.offramps.clone(),
     };
 
     let action = Action::Deposit { amount };
@@ -106,6 +108,8 @@ pub fn build_withdraw_tx(
         reserved: current_state.reserved,
         last_invoice_id: current_state.last_invoice_id,
         invoices: current_state.invoices.clone(),
+        last_offramp_id: current_state.last_offramp_id,
+        offramps: current_state.offramps.clone(),
     };
 
     let action = Action::Withdraw { amount };
@@ -149,6 +153,8 @@ pub fn build_create_invoice_tx(
         reserved: current_state.reserved + amount,
         last_invoice_id: new_invoice_id,
         invoices: new_invoices,
+        last_offramp_id: current_state.last_offramp_id,
+        offramps: current_state.offramps.clone(),
     };
 
     let action = Action::CreateInvoice {
@@ -180,6 +186,8 @@ pub fn build_fulfill_invoice_tx(
         reserved: current_state.reserved - invoice.amount,
         last_invoice_id: current_state.last_invoice_id,
         invoices: remaining,
+        last_offramp_id: current_state.last_offramp_id,
+        offramps: current_state.offramps.clone(),
     };
 
     let action = Action::FulfillInvoice { invoice: invoice.clone() };
@@ -215,9 +223,115 @@ pub fn build_cancel_invoice_tx(
         reserved: current_state.reserved - invoice.amount,
         last_invoice_id: current_state.last_invoice_id,
         invoices: remaining,
+        last_offramp_id: current_state.last_offramp_id,
+        offramps: current_state.offramps.clone(),
     };
 
     let action = Action::CancelInvoice { invoice_id };
+
+    build_contract_tx(ctx, current_state, &new_state, &action, ctx.script_cbtc, None)
+}
+
+/// Build a CreateOfframp transaction.
+///
+/// Registers offramp intent on-chain. No cBTC movement (datum-only change).
+pub fn build_create_offramp_tx(
+    ctx: &TxContext, current_state: &State, amount: i64, payment_hash: &str,
+    refund_address: &str, expires_at: i64,
+) -> Result<(i64, String), CardanoError> {
+    if amount <= 0 {
+        return Err(CardanoError::Parse("offramp amount must be positive".into()));
+    }
+
+    let new_offramp_id = current_state.last_offramp_id + 1;
+    let new_offramp = Offramp {
+        offramp_id: new_offramp_id,
+        amount,
+        payment_hash: payment_hash.to_string(),
+        refund_address: refund_address.to_string(),
+        expires_at,
+    };
+
+    let mut new_offramps = vec![new_offramp];
+    new_offramps.extend(current_state.offramps.clone());
+
+    let new_state = State {
+        total_liquidity: current_state.total_liquidity,
+        reserved: current_state.reserved,
+        last_invoice_id: current_state.last_invoice_id,
+        invoices: current_state.invoices.clone(),
+        last_offramp_id: new_offramp_id,
+        offramps: new_offramps,
+    };
+
+    let action = Action::CreateOfframp {
+        amount,
+        payment_hash: payment_hash.to_string(),
+        refund_address: refund_address.to_string(),
+        expires_at,
+    };
+
+    let tx = build_contract_tx(ctx, current_state, &new_state, &action, ctx.script_cbtc, None)?;
+    Ok((new_offramp_id, tx))
+}
+
+/// Build a FulfillOfframp transaction.
+///
+/// Deposits cBTC to pool after Lightning payment success. Removes offramp entry.
+pub fn build_fulfill_offramp_tx(
+    ctx: &TxContext, current_state: &State, offramp: &Offramp,
+) -> Result<String, CardanoError> {
+    let remaining: Vec<Offramp> = current_state
+        .offramps
+        .iter()
+        .filter(|o| o.offramp_id != offramp.offramp_id)
+        .cloned()
+        .collect();
+
+    let new_state = State {
+        total_liquidity: current_state.total_liquidity + offramp.amount,
+        reserved: current_state.reserved,
+        last_invoice_id: current_state.last_invoice_id,
+        invoices: current_state.invoices.clone(),
+        last_offramp_id: current_state.last_offramp_id,
+        offramps: remaining,
+    };
+
+    let action = Action::FulfillOfframp { offramp: offramp.clone() };
+    let new_cbtc = ctx.script_cbtc + offramp.amount;
+
+    build_contract_tx(ctx, current_state, &new_state, &action, new_cbtc, None)
+}
+
+/// Build a CancelOfframp transaction.
+///
+/// Cancels an expired offramp, removing the entry. No cBTC movement.
+pub fn build_cancel_offramp_tx(
+    ctx: &TxContext, current_state: &State, offramp_id: i64,
+) -> Result<String, CardanoError> {
+    let _offramp = current_state
+        .offramps
+        .iter()
+        .find(|o| o.offramp_id == offramp_id)
+        .ok_or_else(|| CardanoError::NotFound(format!("offramp {} not found", offramp_id)))?;
+
+    let remaining: Vec<Offramp> = current_state
+        .offramps
+        .iter()
+        .filter(|o| o.offramp_id != offramp_id)
+        .cloned()
+        .collect();
+
+    let new_state = State {
+        total_liquidity: current_state.total_liquidity,
+        reserved: current_state.reserved,
+        last_invoice_id: current_state.last_invoice_id,
+        invoices: current_state.invoices.clone(),
+        last_offramp_id: current_state.last_offramp_id,
+        offramps: remaining,
+    };
+
+    let action = Action::CancelOfframp { offramp_id };
 
     build_contract_tx(ctx, current_state, &new_state, &action, ctx.script_cbtc, None)
 }
