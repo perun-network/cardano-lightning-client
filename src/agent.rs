@@ -127,8 +127,76 @@ impl CardanoAgent {
         ))
     }
 
+    /// Fetch protocol parameters from the Blockfrost-compatible API (epoch parameters).
+    /// Returns a whisky `Protocol` struct for correct fee calculation.
+    pub async fn fetch_protocol_params(&self) -> Result<whisky::Protocol, CardanoError> {
+        let base = self.config.blockfrost_url.trim_end_matches('/');
+        let url = format!("{}/epochs/latest/parameters", base);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("project_id", &self.config.blockfrost_key)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(CardanoError::NotFound("failed to fetch epoch parameters".into()));
+        }
+
+        let p: Value = resp.json().await?;
+
+        let parse_u64 = |key: &str| -> u64 {
+            p.get(key)
+                .and_then(|v| v.as_str().map(|s| s.parse().ok()).unwrap_or_else(|| v.as_u64()))
+                .unwrap_or(0)
+        };
+        let parse_i32 = |key: &str| -> i32 {
+            p.get(key).and_then(|v| v.as_i64()).unwrap_or(0) as i32
+        };
+        let parse_u32 = |key: &str| -> u32 {
+            p.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as u32
+        };
+        let parse_f64 = |key: &str| -> f64 {
+            p.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)
+        };
+        let parse_string = |key: &str| -> String {
+            p.get(key)
+                .and_then(|v| v.as_str().map(String::from).or_else(|| Some(v.to_string())))
+                .unwrap_or_default()
+        };
+
+        Ok(whisky::Protocol {
+            epoch: parse_i32("epoch"),
+            min_fee_a: parse_u64("min_fee_a"),
+            min_fee_b: parse_u64("min_fee_b"),
+            max_block_size: parse_i32("max_block_size"),
+            max_tx_size: parse_u32("max_tx_size"),
+            max_block_header_size: parse_i32("max_block_header_size"),
+            key_deposit: parse_u64("key_deposit"),
+            pool_deposit: parse_u64("pool_deposit"),
+            decentralisation: parse_f64("decentralisation_param"),
+            min_pool_cost: parse_string("min_pool_cost"),
+            price_mem: parse_f64("price_mem"),
+            price_step: parse_f64("price_step"),
+            max_tx_ex_mem: parse_string("max_tx_ex_mem"),
+            max_tx_ex_steps: parse_string("max_tx_ex_steps"),
+            max_block_ex_mem: parse_string("max_block_ex_mem"),
+            max_block_ex_steps: parse_string("max_block_ex_steps"),
+            max_val_size: parse_u32("max_val_size"),
+            collateral_percent: parse_f64("collateral_percent"),
+            max_collateral_inputs: parse_i32("max_collateral_inputs"),
+            coins_per_utxo_size: parse_u64("coins_per_utxo_size"),
+            min_fee_ref_script_cost_per_byte: parse_u64("min_fee_ref_script_cost_per_byte"),
+        })
+    }
+
     /// Fetch cost models from the Blockfrost-compatible API (epoch parameters).
     /// Returns `Vec<Vec<i64>>` with [PlutusV1, PlutusV2, PlutusV3] cost model values.
+    ///
+    /// NOTE: The alphabetical key sort works for PlutusV1/V2 but produces incorrect
+    /// ordering for PlutusV3 (new parameters disrupt the canonical index mapping).
+    /// For known networks, prefer using the whisky SDK's built-in Network variants.
     pub async fn fetch_cost_models(&self) -> Result<Vec<Vec<i64>>, CardanoError> {
         let base = self.config.blockfrost_url.trim_end_matches('/');
         let url = format!("{}/epochs/latest/parameters", base);

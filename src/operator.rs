@@ -7,7 +7,7 @@ use crate::agent::CardanoAgent;
 use crate::contract::{self, TxContext};
 use crate::error::CardanoError;
 use crate::types::{Invoice, Offramp, State};
-use whisky::{Asset, Network, UTxO, UtxoInput, UtxoOutput};
+use whisky::{Asset, Network, Protocol, UTxO, UtxoInput, UtxoOutput};
 
 /// Configuration for the operator agent.
 #[derive(Debug, Clone)]
@@ -31,6 +31,7 @@ pub struct OperatorAgent {
     agent: CardanoAgent,
     config: OperatorConfig,
     network: Network,
+    protocol_params: Option<Protocol>,
 }
 
 /// Raw UTxO data from Blockfrost, needed for tx building.
@@ -48,13 +49,38 @@ impl OperatorAgent {
             agent,
             config,
             network: Network::Mainnet, // overwritten by init()
+            protocol_params: None,
         }
     }
 
     /// Initialize network cost models from the chain. Call once after construction.
+    ///
+    /// For known networks (preprod, preview, mainnet), uses the whisky SDK's built-in
+    /// cost models which have the correct canonical parameter ordering. Blockfrost
+    /// returns cost model parameters as named keys; alphabetical sorting of these
+    /// names matches the canonical index order for PlutusV1/V2 but NOT for PlutusV3
+    /// (new V3 parameters like `andByteString-*` sort before `appendByteString-*`
+    /// alphabetically but come after it in the canonical Plutus spec order).
+    ///
+    /// For local devnet / unknown networks, falls back to fetching from Blockfrost.
     pub async fn init(&mut self) -> Result<(), CardanoError> {
-        let cost_models = self.agent.fetch_cost_models().await?;
-        self.network = Network::Custom(cost_models);
+        let url = &self.agent.config().blockfrost_url;
+        if url.contains("preprod") {
+            self.network = Network::Preprod;
+        } else if url.contains("preview") {
+            self.network = Network::Preview;
+        } else {
+            // Local devnet or unknown — fetch cost models dynamically.
+            // On yaci-devkit the alphabetical sort is fine (no PlutusV3 mismatch).
+            let cost_models = self.agent.fetch_cost_models().await?;
+            self.network = Network::Custom(cost_models);
+        }
+        // Fetch actual protocol params for correct fee calculation.
+        // Falls back to Protocol::default() if the fetch fails (e.g. on devnet).
+        match self.agent.fetch_protocol_params().await {
+            Ok(pp) => self.protocol_params = Some(pp),
+            Err(_) => {} // default will be used by whisky
+        }
         Ok(())
     }
 
@@ -390,6 +416,7 @@ impl OperatorAgent {
             cbtc_name: &self.config.cbtc_name,
             wallet_utxos,
             network: self.network.clone(),
+            protocol_params: self.protocol_params.clone(),
         }
     }
 }

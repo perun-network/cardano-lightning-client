@@ -39,6 +39,8 @@ pub struct TxContext<'a> {
     pub wallet_utxos: &'a [UTxO],
     /// Network (with cost models) for correct script integrity hash.
     pub network: Network,
+    /// Protocol parameters for correct fee calculation (None = use default).
+    pub protocol_params: Option<Protocol>,
 }
 
 impl TxContext<'_> {
@@ -348,6 +350,7 @@ fn build_contract_tx(
     new_script_cbtc: i64, owner_output: Option<(&str, i64)>,
 ) -> Result<String, CardanoError> {
     let mut tx = TxBuilder::new_core();
+    tx.protocol_params = ctx.protocol_params.clone();
     tx.network(ctx.network.clone());
 
     // 1. Spend the script UTxO
