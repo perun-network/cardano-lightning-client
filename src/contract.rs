@@ -383,17 +383,25 @@ fn build_contract_tx(
 
     // 4. Collateral (required for Plutus script spending)
     // Conway requires ADA-only collateral inputs — no native tokens allowed.
+    // Select the LARGEST ADA-only UTxO to ensure enough for collateral return.
     let collateral_utxo = ctx
         .wallet_utxos
         .iter()
-        .find(|u| {
-            // Must be ADA-only (no native tokens) and have >= 5 ADA
+        .filter(|u| {
             let is_ada_only = u.output.amount.iter().all(|a| a.unit() == "lovelace");
             let has_enough = u.output.amount.iter().any(|a| {
                 a.unit() == "lovelace"
                     && a.quantity().parse::<u64>().unwrap_or(0) >= 5_000_000
             });
             is_ada_only && has_enough
+        })
+        .max_by_key(|u| {
+            u.output
+                .amount
+                .iter()
+                .find(|a| a.unit() == "lovelace")
+                .map(|a| a.quantity().parse::<u64>().unwrap_or(0))
+                .unwrap_or(0)
         })
         .ok_or_else(|| {
             CardanoError::Parse(
