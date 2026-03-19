@@ -418,9 +418,20 @@ fn build_contract_tx(
     .set_collateral_return_address(ctx.operator_address);
 
     // 5. Operator signs and pays fees
+    // Exclude the collateral UTxO from fee selection so it is never consumed
+    // as a regular input — it must remain available for future Plutus TXs.
+    let fee_utxos: Vec<UTxO> = ctx
+        .wallet_utxos
+        .iter()
+        .filter(|u| {
+            u.input.tx_hash != collateral_utxo.input.tx_hash
+                || u.input.output_index != collateral_utxo.input.output_index
+        })
+        .cloned()
+        .collect();
     tx.required_signer_hash(ctx.operator_pkh)
         .change_address(ctx.operator_address)
-        .select_utxos_from(ctx.wallet_utxos, 5_000_000)
+        .select_utxos_from(&fee_utxos, 5_000_000)
         .signing_key(ctx.operator_skey);
 
     tx.complete_sync(None)
