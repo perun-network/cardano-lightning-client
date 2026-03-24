@@ -7,7 +7,7 @@ use crate::agent::CardanoAgent;
 use crate::contract::{self, TxContext};
 use crate::error::CardanoError;
 use crate::types::{Invoice, Offramp, State};
-use whisky::{Asset, Network, UTxO, UtxoInput, UtxoOutput};
+use whisky::{Asset, Network, TxBuilder, UTxO, UtxoInput, UtxoOutput};
 
 /// Configuration for the operator agent.
 #[derive(Debug, Clone)]
@@ -192,10 +192,10 @@ impl OperatorAgent {
         Ok(utxos)
     }
 
-    /// Verify that a TX sent cBTC to the operator address.
+    /// Verify that a TX sent the exact cBTC amount to the operator address.
     ///
     /// Queries Blockfrost `GET /txs/{tx_hash}/utxos` and checks that at least one
-    /// output to `operator_address` carries >= `expected_amount` cBTC.
+    /// output to `operator_address` carries exactly `expected_amount` cBTC.
     pub async fn verify_cbtc_received(
         &self, tx_hash: &str, expected_amount: i64,
     ) -> Result<bool, CardanoError> {
@@ -237,7 +237,7 @@ impl OperatorAgent {
                             .unwrap_or("0")
                             .parse()
                             .unwrap_or(0);
-                        if unit == cbtc_unit && qty >= expected_amount {
+                        if unit == cbtc_unit && qty == expected_amount {
                             return Ok(true);
                         }
                     }
@@ -341,6 +341,33 @@ impl OperatorAgent {
 
         let ctx = self.make_tx_context(&script_utxo, &wallet_utxos);
         contract::build_cancel_offramp_tx(&ctx, &script_utxo.state, offramp_id)
+    }
+
+    /// Build + sign a simple cBTC transfer from operator to a target address.
+    /// Used for refunding cBTC when an offramp Lightning payment fails.
+    pub async fn send_cbtc(
+        &self, target_address: &str, amount: i64,
+    ) -> Result<String, CardanoError> {
+        let wallet_utxos = self.query_wallet_utxos().await?;
+
+        let cbtc_unit = format!("{}{}", self.config.cbtc_policy, self.config.cbtc_name);
+
+        let mut mesh = TxBuilder::new_core();
+        mesh.tx_out(target_address, &[
+            Asset::new_from_str("lovelace", "2000000"),
+            Asset::new_from_str(&cbtc_unit, &amount.to_string()),
+        ])
+        .change_address(&self.config.operator_address)
+        .select_utxos_from(&wallet_utxos, 5_000_000)
+        .signing_key(&self.config.skey_hex)
+        .complete_sync(None)
+        .map_err(|e| CardanoError::Parse(format!("failed to build cBTC send tx: {:?}", e)))?;
+
+        let signed = mesh
+            .complete_signing()
+            .map_err(|e| CardanoError::Parse(format!("failed to sign cBTC send tx: {:?}", e)))?;
+
+        Ok(signed)
     }
 
     /// Submit a signed transaction via Blockfrost.
