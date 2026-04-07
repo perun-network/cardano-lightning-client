@@ -204,6 +204,7 @@ pub fn build_fulfill_invoice_tx(
 /// Cancels an expired invoice, unreserving the cBTC.
 pub fn build_cancel_invoice_tx(
     ctx: &TxContext, current_state: &State, invoice_id: i64,
+    current_slot: u64,
 ) -> Result<String, CardanoError> {
     let invoice = current_state
         .invoices
@@ -229,7 +230,7 @@ pub fn build_cancel_invoice_tx(
 
     let action = Action::CancelInvoice { invoice_id };
 
-    build_contract_tx(ctx, current_state, &new_state, &action, ctx.script_cbtc, None)
+    build_contract_tx_with_validity(ctx, current_state, &new_state, &action, ctx.script_cbtc, None, Some(current_slot))
 }
 
 /// Build a CreateOfframp transaction.
@@ -308,6 +309,7 @@ pub fn build_fulfill_offramp_tx(
 /// Cancels an expired offramp, removing the entry. No cBTC movement.
 pub fn build_cancel_offramp_tx(
     ctx: &TxContext, current_state: &State, offramp_id: i64,
+    current_slot: u64,
 ) -> Result<String, CardanoError> {
     let _offramp = current_state
         .offramps
@@ -333,7 +335,7 @@ pub fn build_cancel_offramp_tx(
 
     let action = Action::CancelOfframp { offramp_id };
 
-    build_contract_tx(ctx, current_state, &new_state, &action, ctx.script_cbtc, None)
+    build_contract_tx_with_validity(ctx, current_state, &new_state, &action, ctx.script_cbtc, None, Some(current_slot))
 }
 
 /// Core transaction builder for all 5 operations.
@@ -346,6 +348,14 @@ pub fn build_cancel_offramp_tx(
 fn build_contract_tx(
     ctx: &TxContext, _current_state: &State, new_state: &State, action: &Action,
     new_script_cbtc: i64, owner_output: Option<(&str, i64)>,
+) -> Result<String, CardanoError> {
+    build_contract_tx_with_validity(ctx, _current_state, new_state, action, new_script_cbtc, owner_output, None)
+}
+
+fn build_contract_tx_with_validity(
+    ctx: &TxContext, _current_state: &State, new_state: &State, action: &Action,
+    new_script_cbtc: i64, owner_output: Option<(&str, i64)>,
+    invalid_before_slot: Option<u64>,
 ) -> Result<String, CardanoError> {
     let mut tx = TxBuilder::new_core();
     tx.network(ctx.network.clone());
@@ -441,6 +451,11 @@ fn build_contract_tx(
         .change_address(ctx.operator_address)
         .select_utxos_from(&fee_utxos, 5_000_000)
         .signing_key(ctx.operator_skey);
+
+    // Set validity interval for cancel redeemers (Plutus script checks submitted_after_expiry)
+    if let Some(slot) = invalid_before_slot {
+        tx.invalid_before(slot);
+    }
 
     tx.complete_sync(None)
         .map_err(|e| CardanoError::Parse(format!("tx build failed: {:?}", e)))?;

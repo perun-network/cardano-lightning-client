@@ -127,6 +127,31 @@ impl CardanoAgent {
         ))
     }
 
+    /// Query the current slot number from the latest block.
+    pub async fn query_current_slot(&self) -> Result<u64, CardanoError> {
+        let base = self.config.blockfrost_url.trim_end_matches('/');
+        let url = format!("{}/blocks/latest", base);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("project_id", &self.config.blockfrost_key)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(CardanoError::NotFound("failed to fetch latest block".into()));
+        }
+
+        let block: Value = resp.json().await?;
+        let slot = block
+            .get("slot")
+            .and_then(|s| s.as_u64())
+            .ok_or_else(|| CardanoError::NotFound("no slot in latest block".into()))?;
+
+        Ok(slot)
+    }
+
     /// Fetch cost models from the Blockfrost-compatible API (epoch parameters).
     /// Returns `Vec<Vec<i64>>` with [PlutusV1, PlutusV2, PlutusV3] cost model values.
     pub async fn fetch_cost_models(&self) -> Result<Vec<Vec<i64>>, CardanoError> {

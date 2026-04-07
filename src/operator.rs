@@ -302,9 +302,10 @@ impl OperatorAgent {
     pub async fn cancel_invoice(&self, invoice_id: i64) -> Result<String, CardanoError> {
         let script_utxo = self.query_script_utxo().await?;
         let wallet_utxos = self.query_wallet_utxos().await?;
+        let current_slot = self.agent.query_current_slot().await?;
 
         let ctx = self.make_tx_context(&script_utxo, &wallet_utxos);
-        contract::build_cancel_invoice_tx(&ctx, &script_utxo.state, invoice_id)
+        contract::build_cancel_invoice_tx(&ctx, &script_utxo.state, invoice_id, current_slot)
     }
 
     /// Build + sign a CreateOfframp transaction. Returns (offramp_id, signed_tx_hex).
@@ -338,9 +339,10 @@ impl OperatorAgent {
     pub async fn cancel_offramp(&self, offramp_id: i64) -> Result<String, CardanoError> {
         let script_utxo = self.query_script_utxo().await?;
         let wallet_utxos = self.query_wallet_utxos().await?;
+        let current_slot = self.agent.query_current_slot().await?;
 
         let ctx = self.make_tx_context(&script_utxo, &wallet_utxos);
-        contract::build_cancel_offramp_tx(&ctx, &script_utxo.state, offramp_id)
+        contract::build_cancel_offramp_tx(&ctx, &script_utxo.state, offramp_id, current_slot)
     }
 
     /// Build + sign a simple cBTC transfer from operator to a target address.
