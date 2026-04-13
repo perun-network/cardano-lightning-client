@@ -373,9 +373,11 @@ fn build_contract_tx_with_validity(
         .tx_in_script(ctx.script_cbor);
 
     // 2. Produce the new script UTxO with updated datum
+    // Use at least 5 ADA to cover datum growth from active invoices/offramps
     let new_datum_cbor = datum_cbor(new_state);
+    let min_script_lovelace = std::cmp::max(ctx.script_lovelace, 5_000_000);
     let new_script_assets = vec![
-        Asset::new_from_str("lovelace", &ctx.script_lovelace.to_string()),
+        Asset::new_from_str("lovelace", &min_script_lovelace.to_string()),
         Asset::new_from_str(&ctx.cbtc_unit(), &new_script_cbtc.to_string()),
     ];
 
