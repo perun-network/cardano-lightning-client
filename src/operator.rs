@@ -95,10 +95,10 @@ impl OperatorAgent {
 
         for utxo in &utxos {
             // Find the UTxO with an inline datum (the contract state UTxO)
-            let inline_datum = utxo.get("inline_datum");
-            if inline_datum.is_none() || inline_datum.unwrap().is_null() {
-                continue;
-            }
+            let inline_datum = match utxo.get("inline_datum") {
+                Some(d) if !d.is_null() => d,
+                _ => continue,
+            };
 
             let tx_hash = utxo
                 .get("tx_hash")
@@ -116,8 +116,16 @@ impl OperatorAgent {
             // Parse amounts
             let (lovelace, cbtc_amount) = parse_utxo_amounts(utxo, &self.config)?;
 
-            // Parse state from datum
-            let state = self.agent.query_state().await?;
+            // Parse state directly from this UTxO's datum (not a separate chain query)
+            // to avoid TOCTOU race between UTxO selection and state read.
+            let state = if let Some(cbor_hex) = inline_datum.as_str() {
+                // yaci-devkit returns CBOR hex string
+                let plutus_json = crate::datum::cbor_hex_to_plutus_json(cbor_hex)?;
+                State::try_from(&plutus_json)?
+            } else {
+                // real Blockfrost returns Plutus JSON object
+                State::try_from(inline_datum)?
+            };
 
             return Ok(ScriptUtxoInfo {
                 tx_hash,
@@ -150,14 +158,24 @@ impl OperatorAgent {
             .await?;
 
         if !resp.status().is_success() {
-            return Ok(vec![]);
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(CardanoError::NotFound(format!(
+                "wallet UTxO query failed {}: {}", status, body,
+            )));
         }
 
         let raw_utxos: Vec<serde_json::Value> = resp.json().await?;
         let mut utxos = Vec::new();
 
         for raw in &raw_utxos {
-            let tx_hash = raw.get("tx_hash").and_then(|v| v.as_str()).unwrap_or("");
+            let tx_hash = match raw.get("tx_hash").and_then(|v| v.as_str()) {
+                Some(h) if !h.is_empty() => h,
+                _ => {
+                    println!("WARNING: skipping wallet UTxO with missing tx_hash");
+                    continue;
+                },
+            };
             let tx_index = raw
                 .get("output_index")
                 .or_else(|| raw.get("tx_index"))
@@ -167,8 +185,14 @@ impl OperatorAgent {
             let mut assets = Vec::new();
             if let Some(amount_arr) = raw.get("amount").and_then(|v| v.as_array()) {
                 for a in amount_arr {
-                    let unit = a.get("unit").and_then(|v| v.as_str()).unwrap_or("lovelace");
-                    let qty = a.get("quantity").and_then(|v| v.as_str()).unwrap_or("0");
+                    let unit = match a.get("unit").and_then(|v| v.as_str()) {
+                        Some(u) => u,
+                        None => continue,
+                    };
+                    let qty = match a.get("quantity").and_then(|v| v.as_str()) {
+                        Some(q) => q,
+                        None => continue,
+                    };
                     assets.push(Asset::new_from_str(unit, qty));
                 }
             }
@@ -434,11 +458,14 @@ fn parse_utxo_amounts(
     if let Some(amount_arr) = utxo.get("amount").and_then(|v| v.as_array()) {
         for a in amount_arr {
             let unit = a.get("unit").and_then(|v| v.as_str()).unwrap_or("");
-            let qty_str = a.get("quantity").and_then(|v| v.as_str()).unwrap_or("0");
+            let qty_str = a.get("quantity").and_then(|v| v.as_str())
+                .ok_or_else(|| CardanoError::Parse("missing quantity in UTxO amount".into()))?;
             if unit == "lovelace" {
-                lovelace = qty_str.parse().unwrap_or(0);
+                lovelace = qty_str.parse()
+                    .map_err(|_| CardanoError::Parse(format!("invalid lovelace quantity: {}", qty_str)))?;
             } else if unit == cbtc_unit {
-                cbtc = qty_str.parse().unwrap_or(0);
+                cbtc = qty_str.parse()
+                    .map_err(|_| CardanoError::Parse(format!("invalid cBTC quantity: {}", qty_str)))?;
             }
         }
     }
