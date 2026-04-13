@@ -399,18 +399,18 @@ fn build_contract_tx_with_validity(
         .iter()
         .filter(|u| {
             let is_ada_only = u.output.amount.iter().all(|a| a.unit() == "lovelace");
-            let has_enough = u.output.amount.iter().any(|a| {
-                a.unit() == "lovelace"
-                    && a.quantity().parse::<u64>().unwrap_or(0) >= 5_000_000
-            });
-            is_ada_only && has_enough
+            let lovelace = u.output.amount.iter()
+                .find(|a| a.unit() == "lovelace")
+                .and_then(|a| a.quantity().parse::<u64>().ok())
+                .unwrap_or(0);
+            is_ada_only && lovelace >= 5_000_000
         })
         .max_by_key(|u| {
             u.output
                 .amount
                 .iter()
                 .find(|a| a.unit() == "lovelace")
-                .map(|a| a.quantity().parse::<u64>().unwrap_or(0))
+                .and_then(|a| a.quantity().parse::<u64>().ok())
                 .unwrap_or(0)
         })
         .ok_or_else(|| {
