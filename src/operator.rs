@@ -254,13 +254,17 @@ impl OperatorAgent {
                 }
                 if let Some(amounts) = output.get("amount").and_then(|v| v.as_array()) {
                     for a in amounts {
-                        let unit = a.get("unit").and_then(|v| v.as_str()).unwrap_or("");
-                        let qty: i64 = a
-                            .get("quantity")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("0")
-                            .parse()
-                            .unwrap_or(0);
+                        let unit = match a.get("unit").and_then(|v| v.as_str()) {
+                            Some(u) => u,
+                            None => continue,
+                        };
+                        let qty_str = match a.get("quantity").and_then(|v| v.as_str()) {
+                            Some(q) => q,
+                            None => continue,
+                        };
+                        let qty: i64 = qty_str.parse().map_err(|_|
+                            CardanoError::Parse(format!("invalid quantity in cBTC verification: {}", qty_str))
+                        )?;
                         if unit == cbtc_unit && qty == expected_amount {
                             return Ok(true);
                         }
