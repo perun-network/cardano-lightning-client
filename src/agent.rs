@@ -174,12 +174,22 @@ impl CardanoAgent {
             .get("cost_models")
             .ok_or_else(|| CardanoError::NotFound("no cost_models in epoch parameters".into()))?;
 
+        // Prefer cost_models_raw (pre-ordered arrays) over cost_models (named keys).
+        // Hosted Blockfrost returns named keys whose alphabetical order differs from
+        // the canonical Plutus cost model order. cost_models_raw avoids this issue.
+        let source = params.get("cost_models_raw").unwrap_or(cost_models);
+
         let mut result = Vec::new();
         for lang in &["PlutusV1", "PlutusV2", "PlutusV3"] {
-            if let Some(cm) = cost_models.get(lang) {
-                if let Some(obj) = cm.as_object() {
+            if let Some(cm) = source.get(lang) {
+                if let Some(arr) = cm.as_array() {
+                    // cost_models_raw: values are already a pre-ordered array
+                    let values: Vec<i64> = arr.iter().filter_map(|v| v.as_i64()).collect();
+                    result.push(values);
+                } else if let Some(obj) = cm.as_object() {
+                    // cost_models with numeric keys (yaci-devkit local): sort numerically
                     let mut keys: Vec<&String> = obj.keys().collect();
-                    keys.sort();
+                    keys.sort_by_key(|k| k.parse::<u64>().unwrap_or(u64::MAX));
                     let values: Vec<i64> = keys
                         .iter()
                         .filter_map(|k| obj.get(*k).and_then(|v| v.as_i64()))
