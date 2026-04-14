@@ -52,7 +52,7 @@ fn redeemer_for(action: &Action) -> WRedeemer {
     let cbor_hex = plutus_json_to_cbor_hex(&json).expect("redeemer serialization cannot fail");
     WRedeemer {
         data: WData::CBOR(cbor_hex),
-        ex_units: Budget { mem: 800_000, steps: 400_000_000 },
+        ex_units: Budget { mem: 4_000_000, steps: 800_000_000 },
     }
 }
 
